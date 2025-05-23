@@ -1,11 +1,32 @@
 #!/bin/sh
 
-WPE_URL_FILE="/boot/wpe.txt"
+is_network_up() {
+    ping -c1 -W1 8.8.8.8 >/dev/null 2>&1
+}
+
+is_time_valid() {
+    # Year must be greater than 2020 for TLS to be happy
+    CURRENT_YEAR=$(date +%Y)
+    [ "$CURRENT_YEAR" -ge 2021 ]
+}
 
 start() {
-	echo -n "Starting COG: "
-        /sbin/ifconfig > /root/ifconfig.txt
-        /usr/bin/cog file:///root/ifconfig.txt &> /dev/null &
+        echo "Waiting for network to be ready..."
+        RETRIES=10
+        while ! is_network_up && [ $RETRIES -gt 0 ]; do
+                sleep 1
+                RETRIES=$((RETRIES - 1))
+        done
+
+        echo "Waiting for valid system time..."
+        RETRIES=10
+        while ! is_time_valid && [ $RETRIES -gt 0 ]; do
+                sleep 1
+                RETRIES=$((RETRIES - 1))
+        done
+
+        echo -n "Starting COG: "
+        /usr/bin/cog http://lightningjs.io/fracer/ &> /dev/null &
 }
 
 stop() {
