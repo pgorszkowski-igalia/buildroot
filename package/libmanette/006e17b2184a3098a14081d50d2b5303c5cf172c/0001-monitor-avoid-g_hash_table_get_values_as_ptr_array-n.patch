@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Fri, 6 Nov 2026 07:46:36 +0100
+Subject: [PATCH] monitor: avoid g_hash_table_get_values_as_ptr_array, needs
+ GLib >= 2.76
+
+g_hash_table_get_values_as_ptr_array() was only introduced in GLib
+2.76, but this buildroot ships GLib 2.70, so building fails with:
+
+  error: implicit declaration of function 'g_hash_table_get_values_as_ptr_array'
+
+Fill the returned array by iterating over the hash table instead. This
+also avoids leaking the GPtrArray wrapper, which g_ptr_array_steal()
+does not free.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/manette-monitor.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/src/manette-monitor.c b/src/manette-monitor.c
+index 48f71ae..ef83d62 100644
+--- a/src/manette-monitor.c
++++ b/src/manette-monitor.c
+@@ -598,12 +598,20 @@ ManetteDevice **
+ manette_monitor_list_devices (ManetteMonitor *self,
+                               gsize          *n_devices)
+ {
+-  GPtrArray *devices;
++  ManetteDevice **devices;
++  GHashTableIter iter;
++  gpointer device;
++  gsize i = 0;
+ 
+   g_return_val_if_fail (MANETTE_IS_MONITOR (self), NULL);
+   g_return_val_if_fail (n_devices != NULL, NULL);
+ 
+-  devices = g_hash_table_get_values_as_ptr_array (self->devices);
++  *n_devices = g_hash_table_size (self->devices);
++  devices = g_new (ManetteDevice *, *n_devices);
++
++  g_hash_table_iter_init (&iter, self->devices);
++  while (g_hash_table_iter_next (&iter, NULL, &device))
++    devices[i++] = device;
+ 
+-  return (ManetteDevice **) g_ptr_array_steal (devices, n_devices);
++  return devices;
+ }

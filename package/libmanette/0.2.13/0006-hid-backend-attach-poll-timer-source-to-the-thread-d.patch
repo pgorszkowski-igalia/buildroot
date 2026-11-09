@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Fri, 6 Nov 2026 07:45:56 +0100
+Subject: [PATCH] hid-backend: attach poll timer source to the thread-default
+ context
+
+g_io_add_watch(), g_idle_add() and g_timeout_add() always attach their
+source to the global default GMainContext, not to the thread-default
+one. When libmanette is used from a thread that runs its own
+GMainContext pushed as thread-default (e.g. WPE WebKit / WPEFramework
+on embedded platforms), the global default context is not iterated
+there, so these sources are never dispatched and no gamepad events are
+ever delivered.
+
+This backend is not used by a plain evdev gamepad, but HID-based
+devices (e.g. Steam Deck) would never get their input reports polled.
+
+Build the timeout source with g_timeout_source_new() and attach it to
+g_main_context_get_thread_default(). Keep a reference to the GSource
+and remove it with g_source_destroy() on finalize, since
+g_source_remove() only looks up IDs in the global default context.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/manette-hid-backend.c | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/src/manette-hid-backend.c b/src/manette-hid-backend.c
+index 6e8c675..6f6eda0 100644
+--- a/src/manette-hid-backend.c
++++ b/src/manette-hid-backend.c
+@@ -39,7 +39,7 @@ struct _ManetteHidBackend
+   ManetteDeviceType device_type;
+   ManetteHidDriver *driver;
+   char *name;
+-  guint event_source_id;
++  GSource *event_source;
+ };
+ 
+ static void manette_hid_backend_backend_init (ManetteBackendInterface *iface);
+@@ -65,7 +65,10 @@ manette_hid_backend_finalize (GObject *object)
+ {
+   ManetteHidBackend *self = MANETTE_HID_BACKEND (object);
+ 
+-  g_clear_handle_id (&self->event_source_id, g_source_remove);
++  if (self->event_source) {
++    g_source_destroy (self->event_source);
++    g_clear_pointer (&self->event_source, g_source_unref);
++  }
+   g_free (self->driver);
+   hid_close (self->hid);
+   g_free (self->filename);
+@@ -132,7 +135,9 @@ manette_hid_backend_initialize (ManetteBackend *backend)
+ 
+   // Poll the events in the main loop.
+   poll_rate = manette_hid_driver_get_poll_rate (self->driver);
+-  self->event_source_id = g_timeout_add (poll_rate, G_SOURCE_FUNC (poll_events), self);
++  self->event_source = g_timeout_source_new (poll_rate);
++  g_source_set_callback (self->event_source, G_SOURCE_FUNC (poll_events), self, NULL);
++  g_source_attach (self->event_source, g_main_context_get_thread_default ());
+ 
+   return TRUE;
+ }

@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Wed, 9 Sep 2026 00:00:00 +0000
+Subject: [PATCH] manette-event: avoid G_DEFINE_ENUM_TYPE, needs GLib >= 2.74
+
+G_DEFINE_ENUM_TYPE()/G_DEFINE_ENUM_VALUE() were only introduced in
+GLib 2.74. This buildroot's libglib2 package is 2.70, so building
+against it fails with:
+
+  error: unknown type name 'manette_event_type'
+  error: unknown type name 'G_DEFINE_ENUM_VALUE'
+
+Replace the macro with the classic manual GEnumValue table plus
+g_enum_register_static(), which is available on any GLib 2.x and
+produces the same GType.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/manette-event.c | 26 ++++++++++++++++++++------
+ 1 file changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/src/manette-event.c b/src/manette-event.c
+index bcba92e..e63eb3f 100644
+--- a/src/manette-event.c
++++ b/src/manette-event.c
+@@ -34,12 +34,26 @@
+  * Specifies the type of the event.
+  */
+ 
+-G_DEFINE_ENUM_TYPE (ManetteEventType, manette_event_type,
+-  G_DEFINE_ENUM_VALUE (MANETTE_EVENT_NOTHING, "event-nothing"),
+-  G_DEFINE_ENUM_VALUE (MANETTE_EVENT_BUTTON_PRESS, "event-button-press"),
+-  G_DEFINE_ENUM_VALUE (MANETTE_EVENT_BUTTON_RELEASE, "event-button-release"),
+-  G_DEFINE_ENUM_VALUE (MANETTE_EVENT_ABSOLUTE, "event-absolute"),
+-  G_DEFINE_ENUM_VALUE (MANETTE_EVENT_HAT, "event-hat"))
++GType
++manette_event_type_get_type (void)
++{
++  static gsize g_define_type_id = 0;
++
++  if (g_once_init_enter (&g_define_type_id)) {
++    static const GEnumValue values[] = {
++      { MANETTE_EVENT_NOTHING, "MANETTE_EVENT_NOTHING", "event-nothing" },
++      { MANETTE_EVENT_BUTTON_PRESS, "MANETTE_EVENT_BUTTON_PRESS", "event-button-press" },
++      { MANETTE_EVENT_BUTTON_RELEASE, "MANETTE_EVENT_BUTTON_RELEASE", "event-button-release" },
++      { MANETTE_EVENT_ABSOLUTE, "MANETTE_EVENT_ABSOLUTE", "event-absolute" },
++      { MANETTE_EVENT_HAT, "MANETTE_EVENT_HAT", "event-hat" },
++      { 0, NULL, NULL }
++    };
++    GType type_id = g_enum_register_static (g_intern_static_string ("ManetteEventType"), values);
++    g_once_init_leave (&g_define_type_id, type_id);
++  }
++
++  return g_define_type_id;
++}
+ 
+ /**
+  * ManetteEvent:

@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Fri, 6 Nov 2026 07:46:36 +0100
+Subject: [PATCH] steam-deck-driver: use explicit GSource for rumble timeout
+
+g_timeout_add_once() and GSourceOnceFunc were only introduced in
+GLib 2.74, but this buildroot ships GLib 2.70, so building fails with:
+
+  error: 'GSourceOnceFunc' undeclared
+
+Replace it with g_timeout_source_new() + g_source_attach() on the
+thread-default context, for the same reason as the evdev and HID
+backend sources (see the following patches):
+
+g_io_add_watch(), g_idle_add() and g_timeout_add() always attach their
+source to the global default GMainContext, not to the thread-default
+one. When libmanette is used from a thread that runs its own
+GMainContext pushed as thread-default (e.g. WPE WebKit / WPEFramework
+on embedded platforms), the global default context is not iterated
+there, so these sources are never dispatched and no gamepad events are
+ever delivered.
+
+Keep a reference to the GSource and remove it with g_source_destroy():
+g_source_remove() only looks up IDs in the global default context, so
+it would not find a source attached to another context.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/drivers/manette-steam-deck-driver.c | 24 ++++++++++++++++--------
+ 1 file changed, 16 insertions(+), 8 deletions(-)
+
+diff --git a/src/drivers/manette-steam-deck-driver.c b/src/drivers/manette-steam-deck-driver.c
+index 577b8ed..ea0e5f9 100644
+--- a/src/drivers/manette-steam-deck-driver.c
++++ b/src/drivers/manette-steam-deck-driver.c
+@@ -367,7 +367,7 @@ struct _ManetteSteamDeckDriver {
+ 
+   hid_device *hid;
+ 
+-  guint rumble_timeout;
++  GSource *rumble_source;
+ 
+   guint32 last_packet;
+   guint32 last_buttons_l;
+@@ -669,7 +669,10 @@ manette_steam_deck_driver_finalize (GObject *object)
+ {
+   ManetteSteamDeckDriver *self = MANETTE_STEAM_DECK_DRIVER (object);
+ 
+-  g_clear_handle_id (&self->rumble_timeout, g_source_remove);
++  if (self->rumble_source) {
++    g_source_destroy (self->rumble_source);
++    g_clear_pointer (&self->rumble_source, g_source_unref);
++  }
+ 
+   G_OBJECT_CLASS (manette_steam_deck_driver_parent_class)->finalize (object);
+ }
+@@ -834,12 +837,14 @@ send_rumble (ManetteSteamDeckDriver *self,
+   return TRUE;
+ }
+ 
+-static void
++static gboolean
+ stop_rumble_cb (ManetteSteamDeckDriver *self)
+ {
+-  self->rumble_timeout = 0;
++  g_clear_pointer (&self->rumble_source, g_source_unref);
+ 
+   send_rumble (self, 0, 0);
++
++  return G_SOURCE_REMOVE;
+ }
+ 
+ static gboolean
+@@ -856,11 +861,14 @@ manette_steam_deck_driver_rumble (ManetteHidDriver *driver,
+     return FALSE;
+   }
+ 
+-  g_clear_handle_id (&self->rumble_timeout, g_source_remove);
++  if (self->rumble_source) {
++    g_source_destroy (self->rumble_source);
++    g_clear_pointer (&self->rumble_source, g_source_unref);
++  }
+ 
+-  self->rumble_timeout = g_timeout_add_once (milliseconds,
+-                                             (GSourceOnceFunc) stop_rumble_cb,
+-                                             self);
++  self->rumble_source = g_timeout_source_new (milliseconds);
++  g_source_set_callback (self->rumble_source, (GSourceFunc) stop_rumble_cb, self, NULL);
++  g_source_attach (self->rumble_source, g_main_context_get_thread_default ());
+ 
+   return TRUE;
+ }

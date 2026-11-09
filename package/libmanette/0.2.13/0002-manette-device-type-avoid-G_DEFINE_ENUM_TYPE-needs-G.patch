@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Wed, 9 Sep 2026 00:00:00 +0000
+Subject: [PATCH] manette-device-type: avoid G_DEFINE_ENUM_TYPE, needs GLib >=
+ 2.74
+
+G_DEFINE_ENUM_TYPE()/G_DEFINE_ENUM_VALUE() were only introduced in
+GLib 2.74. This buildroot's libglib2 package is 2.70, so building
+against it fails with:
+
+  error: unknown type name 'manette_device_type'
+  error: unknown type name 'G_DEFINE_ENUM_VALUE'
+
+Replace the macro with the classic manual GEnumValue table plus
+g_enum_register_static(), which is available on any GLib 2.x and
+produces the same GType.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/manette-device-type.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/src/manette-device-type.c b/src/manette-device-type.c
+index d233613..38440b0 100644
+--- a/src/manette-device-type.c
++++ b/src/manette-device-type.c
+@@ -32,9 +32,23 @@
+  * Since: 0.2.10
+  */
+ 
+-G_DEFINE_ENUM_TYPE (ManetteDeviceType, manette_device_type,
+-  G_DEFINE_ENUM_VALUE (MANETTE_DEVICE_GENERIC, "generic"),
+-  G_DEFINE_ENUM_VALUE (MANETTE_DEVICE_STEAM_DECK, "steam-deck"))
++GType
++manette_device_type_get_type (void)
++{
++  static gsize g_define_type_id = 0;
++
++  if (g_once_init_enter (&g_define_type_id)) {
++    static const GEnumValue values[] = {
++      { MANETTE_DEVICE_GENERIC, "MANETTE_DEVICE_GENERIC", "generic" },
++      { MANETTE_DEVICE_STEAM_DECK, "MANETTE_DEVICE_STEAM_DECK", "steam-deck" },
++      { 0, NULL, NULL }
++    };
++    GType type_id = g_enum_register_static (g_intern_static_string ("ManetteDeviceType"), values);
++    g_once_init_leave (&g_define_type_id, type_id);
++  }
++
++  return g_define_type_id;
++}
+ 
+ #define VENDOR_STEAM                  0x28DE
+ #define PRODUCT_JUPITER               0x1205

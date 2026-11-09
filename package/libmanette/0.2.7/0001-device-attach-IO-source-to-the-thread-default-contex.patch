@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Fri, 6 Nov 2026 07:45:33 +0100
+Subject: [PATCH] device: attach IO source to the thread-default context
+
+g_io_add_watch(), g_idle_add() and g_timeout_add() always attach their
+source to the global default GMainContext, not to the thread-default
+one. When libmanette is used from a thread that runs its own
+GMainContext pushed as thread-default (e.g. WPE WebKit / WPEFramework
+on embedded platforms), the global default context is not iterated
+there, so these sources are never dispatched and no gamepad events are
+ever delivered.
+
+This was observed on a WPEFramework/Thunder based platform: the evdev
+fd was opened successfully, yet poll_events() was never called.
+
+Build the fd source with g_unix_fd_source_new() and attach it to
+g_main_context_get_thread_default(). Keep a reference to the GSource
+and remove it with g_source_destroy() on finalize: g_source_remove()
+only looks up IDs in the global default context, so it would not find
+the source and poll_events() could run on a finalized device after it
+is unplugged.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/manette-device.c | 20 +++++++++-----------
+ 1 file changed, 9 insertions(+), 11 deletions(-)
+
+diff --git a/src/manette-device.c b/src/manette-device.c
+index 5f84b15..a7fc6f5 100644
+--- a/src/manette-device.c
++++ b/src/manette-device.c
+@@ -27,6 +27,7 @@
+ 
+ #include <errno.h>
+ #include <fcntl.h>
++#include <glib-unix.h>
+ #include <libevdev/libevdev.h>
+ #include <linux/input-event-codes.h>
+ #include <stdlib.h>
+@@ -41,7 +42,7 @@ struct _ManetteDevice
+   GObject parent_instance;
+ 
+   gint fd;
+-  glong event_source_id;
++  GSource *event_source;
+   struct libevdev *evdev_device;
+   guint8 key_map[KEY_MAX];
+   guint8 abs_map[ABS_MAX];
+@@ -202,11 +203,11 @@ remove_event_source (ManetteDevice *self)
+ {
+   g_assert (self != NULL);
+ 
+-  if (self->event_source_id < 0)
++  if (self->event_source == NULL)
+     return;
+ 
+-  g_source_remove ((guint) self->event_source_id);
+-  self->event_source_id = -1;
++  g_source_destroy (self->event_source);
++  g_clear_pointer (&self->event_source, g_source_unref);
+ }
+ 
+ static void
+@@ -328,7 +329,6 @@ manette_device_class_init (ManetteDeviceClass *klass)
+ static void
+ manette_device_init (ManetteDevice *self)
+ {
+-  self->event_source_id = -1;
+   self->rumble_effect.type = FF_RUMBLE;
+   self->rumble_effect.id = -1;
+ }
+@@ -438,7 +438,7 @@ on_evdev_event (ManetteDevice      *self,
+ }
+ 
+ static gboolean
+-poll_events (GIOChannel    *source,
++poll_events (gint           fd,
+              GIOCondition   condition,
+              ManetteDevice *self)
+ {
+@@ -469,7 +469,6 @@ manette_device_new (const gchar  *filename,
+                     GError      **error)
+ {
+   g_autoptr (ManetteDevice) self = NULL;
+-  g_autoptr (GIOChannel) channel = NULL;
+   gint buttons_number;
+   gint axes_number;
+   guint i;
+@@ -512,11 +511,10 @@ manette_device_new (const gchar  *filename,
+     return NULL;
+   }
+ 
+-  self->event_source_id = -1;
+-
+   // Poll the events in the main loop.
+-  channel = g_io_channel_unix_new (self->fd);
+-  self->event_source_id = (glong) g_io_add_watch (channel, G_IO_IN, (GIOFunc) poll_events, self);
++  self->event_source = g_unix_fd_source_new (self->fd, G_IO_IN);
++  g_source_set_callback (self->event_source, (GSourceFunc) poll_events, self, NULL);
++  g_source_attach (self->event_source, g_main_context_get_thread_default ());
+   buttons_number = 0;
+ 
+   // Initialize the axes buttons and hats.

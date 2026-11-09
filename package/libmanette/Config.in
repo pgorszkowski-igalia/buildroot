@@ -11,6 +11,42 @@ config BR2_PACKAGE_LIBMANETTE
 
 	  https://gitlab.gnome.org/GNOME/libmanette
 
+if BR2_PACKAGE_LIBMANETTE
+
+choice
+	prompt "libmanette version"
+	default BR2_PACKAGE_LIBMANETTE_0_2_7
+	help
+	  Select the version of libmanette to build.
+
+	  0.2.x installs the manette-0.2 API (libmanette-0.2.so),
+	  1.0 installs the manette-1 API (libmanette-1.so).
+
+config BR2_PACKAGE_LIBMANETTE_0_2_7
+	bool "0.2.7"
+
+config BR2_PACKAGE_LIBMANETTE_0_2_13
+	bool "0.2.13"
+	depends on BR2_PACKAGE_HAS_UDEV # hidapi
+	depends on BR2_TOOLCHAIN_HAS_THREADS_NPTL # hidapi
+	select BR2_PACKAGE_HIDAPI
+
+config BR2_PACKAGE_LIBMANETTE_1_0
+	bool "1.0 (pre-release, git 006e17b)"
+	depends on BR2_PACKAGE_HAS_UDEV # hidapi
+	depends on BR2_TOOLCHAIN_HAS_THREADS_NPTL # hidapi
+	select BR2_PACKAGE_HIDAPI
+	help
+	  Development snapshot of the upcoming libmanette 1.0, which
+	  provides a new, incompatible API (manette-1).
+
+endchoice
+
+comment "libmanette 0.2.13 and 1.0 need udev /dev management and a toolchain w/ NPTL threads"
+	depends on !BR2_PACKAGE_HAS_UDEV || !BR2_TOOLCHAIN_HAS_THREADS_NPTL
+
+endif
+
 comment "libmanette needs a toolchain w/ wchar, threads, headers >= 4.16"
 	depends on BR2_USE_MMU
 	depends on !BR2_USE_WCHAR || !BR2_TOOLCHAIN_HAS_THREADS || \

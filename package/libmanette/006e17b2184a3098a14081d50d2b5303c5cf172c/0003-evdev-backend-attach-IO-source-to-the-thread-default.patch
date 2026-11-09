@@ -1,0 +1,90 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+Date: Fri, 6 Nov 2026 07:46:36 +0100
+Subject: [PATCH] evdev-backend: attach IO source to the thread-default context
+
+g_io_add_watch(), g_idle_add() and g_timeout_add() always attach their
+source to the global default GMainContext, not to the thread-default
+one. When libmanette is used from a thread that runs its own
+GMainContext pushed as thread-default (e.g. WPE WebKit / WPEFramework
+on embedded platforms), the global default context is not iterated
+there, so these sources are never dispatched and no gamepad events are
+ever delivered.
+
+This was observed on a WPEFramework/Thunder based platform: the evdev
+fd was opened successfully, yet poll_events() was never called.
+
+Build the fd source with g_unix_fd_source_new() and attach it to
+g_main_context_get_thread_default(). Keep a reference to the GSource
+and remove it with g_source_destroy() on finalize: g_source_remove()
+only looks up IDs in the global default context, so it would not find
+the source and poll_events() could run on a finalized backend after
+the device is unplugged.
+
+Signed-off-by: Przemyslaw Gorszkowski <pgorszkowski@igalia.com>
+---
+ src/manette-evdev-backend.c | 16 ++++++++++------
+ 1 file changed, 10 insertions(+), 6 deletions(-)
+
+diff --git a/src/manette-evdev-backend.c b/src/manette-evdev-backend.c
+index 5d2ce10..7c86089 100644
+--- a/src/manette-evdev-backend.c
++++ b/src/manette-evdev-backend.c
+@@ -22,6 +22,7 @@
+ #include "manette-evdev-backend-private.h"
+ 
+ #include <fcntl.h>
++#include <glib-unix.h>
+ #include <libevdev/libevdev.h>
+ #include <linux/input.h>
+ #include <linux/input-event-codes.h>
+@@ -41,7 +42,7 @@ struct _ManetteEvdevBackend
+   char *filename;
+ 
+   int fd;
+-  guint event_source_id;
++  GSource *event_source;
+   struct libevdev *evdev_device;
+ 
+   guint8 key_map[KEY_MAX];
+@@ -385,7 +386,7 @@ on_evdev_event (ManetteEvdevBackend *self,
+ }
+ 
+ static gboolean
+-poll_events (GIOChannel          *source,
++poll_events (gint                 fd,
+              GIOCondition         condition,
+              ManetteEvdevBackend *self)
+ {
+@@ -410,7 +411,10 @@ manette_evdev_backend_finalize (GObject *object)
+   ManetteEvdevBackend *self = MANETTE_EVDEV_BACKEND (object);
+ 
+   g_clear_object (&self->mapping);
+-  g_clear_handle_id (&self->event_source_id, g_source_remove);
++  if (self->event_source) {
++    g_source_destroy (self->event_source);
++    g_clear_pointer (&self->event_source, g_source_unref);
++  }
+   close (self->fd);
+   libevdev_free (self->evdev_device);
+   g_free (self->filename);
+@@ -437,7 +441,6 @@ static gboolean
+ manette_evdev_backend_initialize (ManetteBackend *backend)
+ {
+   ManetteEvdevBackend *self = MANETTE_EVDEV_BACKEND (backend);
+-  g_autoptr (GIOChannel) channel = NULL;
+   int vendor, product;
+   int buttons_number;
+   int axes_number;
+@@ -465,8 +468,9 @@ manette_evdev_backend_initialize (ManetteBackend *backend)
+     return FALSE;
+ 
+   // Poll the events in the main loop.
+-  channel = g_io_channel_unix_new (self->fd);
+-  self->event_source_id = g_io_add_watch (channel, G_IO_IN, (GIOFunc) poll_events, self);
++  self->event_source = g_unix_fd_source_new (self->fd, G_IO_IN);
++  g_source_set_callback (self->event_source, (GSourceFunc) poll_events, self, NULL);
++  g_source_attach (self->event_source, g_main_context_get_thread_default ());
+ 
+   buttons_number = 0;
+ 
